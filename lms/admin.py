@@ -1,34 +1,27 @@
 from django.contrib import admin
-from .models import LoanRequest, Customer  # Import your models
-from .models import Subscription  # Import Subscription model
+from .models import LoanRequest, Customer, Subscription, ScoringResult
 
 # Register your models here.
-
 @admin.register(LoanRequest)
 class LoanRequestAdmin(admin.ModelAdmin):
-    """
-    Admin configuration for the LoanRequest model.
-    This allows LoanRequest objects to be managed through the Django admin interface.
-    """
-    list_display = ('customer_number', 'amount', 'status', 'token')
-    list_filter = ('status',)
-    search_fields = ('customer_number',)
+    list_display = ('customer_number', 'amount', 'status', 'created_at', 'approved_limit', 'score')
+    list_filter = ('status', 'created_at')
+    search_fields = ('customer_number', 'status')
+    readonly_fields = ('created_at',)
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
-    """
-    Admin configuration for the Customer model.
-    This allows Customer objects to be managed through the Django admin interface.
-    """
-    list_display = ('customer_number',)
-    search_fields = ('customer_number',)
+    list_display = ('customer_number', 'first_name', 'last_name', 'date_of_birth')
+    search_fields = ('customer_number', 'first_name', 'last_name')
 
 @admin.register(Subscription)
 class SubscriptionAdmin(admin.ModelAdmin):
-    """
-    Admin configuration for the Subscription model.
-    This allows Subscription objects to be managed through the Django admin interface.
-    """
-    list_display = ('customer_number', 'subscription_date', 'status')  # Customize as needed
-    list_filter = ('status',)
+    list_display = ('customer_number', 'subscription_date', 'status')
+    list_filter = ('status', 'subscription_date')
     search_fields = ('customer_number',)
+
+@admin.register(ScoringResult)
+class ScoringResultAdmin(admin.ModelAdmin):
+    list_display = ('loan_request', 'score', 'limit_amount', 'created_at')
+    list_filter = ('created_at',)
+    search_fields = ('loan_request__customer_number',)
