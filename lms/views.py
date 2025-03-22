@@ -11,6 +11,8 @@ import time
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 import json  # Import the json module
+import logging
+
 
 # Settings for external APIs (replace with actual values - ideally from environment variables)
 SCORING_ENGINE_BASE_URL = settings.SCORING_ENGINE_BASE_URL
@@ -41,10 +43,10 @@ def register_client():
 
     url = SCORING_ENGINE_CLIENT_URL
     payload = {
-        "url": "http://your-domain.com/loans/transactions/",  # Replace with your actual endpoint
+        "url": settings.SCORING_ENGINE_ENDPOINT_URL,  # Use environment variable
         "name": "LMS Service",
-        "username": "admin",  
-        "password": "pwd123"  
+        "username": settings.CORE_BANKING_USERNAME,  # Use environment variable
+        "password": settings.CORE_BANKING_PASSWORD  # Use environment variable
     }
     try:
         response = requests.post(url, json=payload)
@@ -57,6 +59,8 @@ def register_client():
 
 
 # Function to fetch customer KYC data
+logger = logging.getLogger(__name__)
+
 def get_customer_kyc(customer_number):
     """
     Fetches customer information from the KYC API using the provided customer number.
@@ -66,9 +70,8 @@ def get_customer_kyc(customer_number):
         response = client.service.getKYC(customer_number)
         return response
     except Exception as e:
-        print(f"Error fetching KYC data: {e}")
+        logger.error(f"Error fetching KYC data for customer {customer_number}: {e}", exc_info=True)
         return None
-
 
 # Function to fetch transaction data
 def get_transaction_data(customer_number):
@@ -79,8 +82,6 @@ def get_transaction_data(customer_number):
     try:
         client = Client(TRANSACTION_WSDL_URL)
         response = client.service.getTransactions(customer_number)
-        # Adapt the response to match the Transaction Data Response format
-        # This is a simplified example, you'll need to map fields correctly
         transaction_data = []
         for item in response:
             transaction_data.append({
@@ -172,7 +173,7 @@ def get_transaction_data(customer_number):
             })
         return transaction_data
     except Exception as e:
-        print(f"Error fetching transaction data: {e}")
+        logger.error(f"Error fetching transaction data for customer {customer_number}: {e}", exc_info=True)
         return None
 
 

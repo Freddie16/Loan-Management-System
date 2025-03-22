@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 
 import os
 from pathlib import Path
+from decouple import config
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -21,12 +23,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-*slo+@$jqs6tx)la)$lbgx#e-$^h#=0dd%709lx%@io7gi$gn&'
+SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
 
 # Application definition
 
@@ -135,18 +137,13 @@ REST_FRAMEWORK = {
     ]
 }
 
-# Settings for external APIs (replace with actual values - ideally from environment variables)
-SCORING_ENGINE_BASE_URL = os.environ.get('SCORING_ENGINE_BASE_URL',
-                                        "https://scoringtest.credable.io/api/v1/scoring")
-SCORING_ENGINE_CLIENT_URL = os.environ.get('SCORING_ENGINE_CLIENT_URL',
-                                          "https://scoringtest.credable.io/api/v1/client/createClient")
-KYC_WSDL_URL = os.environ.get('KYC_WSDL_URL',
-                               "https://kycapitest.credable.io/service/customerWsdl.wsdl")
-TRANSACTION_WSDL_URL = os.environ.get('TRANSACTION_WSDL_URL',
-                                       "https://trxapitest.credable.io/service/transactionWsdl.wsdl")
-CORE_BANKING_USERNAME = os.environ.get('CORE_BANKING_USERNAME', "admin")
-CORE_BANKING_PASSWORD = os.environ.get('CORE_BANKING_PASSWORD', "pwd123")
-
-# Settings for retry mechanism
-RETRY_COUNT = int(os.environ.get('RETRY_COUNT', 3))
-RETRY_DELAY = int(os.environ.get('RETRY_DELAY', 5))  # seconds
+# Scoring Engine API Settings
+SCORING_ENGINE_BASE_URL = config('SCORING_ENGINE_BASE_URL')
+SCORING_ENGINE_CLIENT_URL = config('SCORING_ENGINE_CLIENT_URL')
+SCORING_ENGINE_ENDPOINT_URL = config('SCORING_ENGINE_ENDPOINT_URL')
+KYC_WSDL_URL = config('KYC_WSDL_URL')
+TRANSACTION_WSDL_URL = config('TRANSACTION_WSDL_URL')
+CORE_BANKING_USERNAME = config('CORE_BANKING_USERNAME')
+CORE_BANKING_PASSWORD = config('CORE_BANKING_PASSWORD')
+RETRY_COUNT = config('RETRY_COUNT', default=3, cast=int)
+RETRY_DELAY = config('RETRY_DELAY', default=5, cast=int)
