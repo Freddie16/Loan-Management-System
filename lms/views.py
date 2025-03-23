@@ -33,28 +33,25 @@ CLIENT_TOKEN = None  # Initialize as None, fetch it when needed
 
 # Function to register the client with the scoring engine
 def register_client():
-    """
-    Registers the LMS with the Scoring Engine to receive a client token.
-    This token is used for subsequent communication with the Scoring Engine.
-    """
-    global CLIENT_TOKEN  # Use the global CLIENT_TOKEN
+    global CLIENT_TOKEN
     if CLIENT_TOKEN:
-        return CLIENT_TOKEN  # Return if already have a token
+        return CLIENT_TOKEN
 
     url = SCORING_ENGINE_CLIENT_URL
     payload = {
-        "url": settings.SCORING_ENGINE_ENDPOINT_URL,  # Use environment variable
+        "url": settings.SCORING_ENGINE_ENDPOINT_URL,
         "name": "LMS Service",
-        "username": settings.CORE_BANKING_USERNAME,  # Use environment variable
-        "password": settings.CORE_BANKING_PASSWORD  # Use environment variable
+        "username": settings.CORE_BANKING_USERNAME,
+        "password": settings.CORE_BANKING_PASSWORD
     }
     try:
         response = requests.post(url, json=payload)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        response.raise_for_status()
         CLIENT_TOKEN = response.json().get("token")
         return CLIENT_TOKEN
     except requests.exceptions.RequestException as e:
-        print(f"Error registering client: {e}")
+        logger.error(f"Error registering client: {e}")
+        logger.error(f"Response content: {response.content if 'response' in locals() else 'No response'}")
         return None
 
 
@@ -66,8 +63,17 @@ def get_customer_kyc(customer_number):
     Fetches customer information from the KYC API using the provided customer number.
     """
     try:
+        logger.info(f"Fetching KYC data for customer: {customer_number}")
         client = Client(KYC_WSDL_URL)
-        response = client.service.getKYC(customer_number)
+        logger.info(f"KYC WSDL URL: {KYC_WSDL_URL}")
+        
+        # Construct the request
+        request_data = {"customerNumber": customer_number}
+        
+        # Make the SOAP request
+        response = client.service.getKYC(**request_data)
+        logger.info(f"KYC API response: {response}")
+        
         return response
     except Exception as e:
         logger.error(f"Error fetching KYC data for customer {customer_number}: {e}", exc_info=True)
@@ -222,68 +228,70 @@ def get_scoring_result(token):
         print(f"Error getting scoring result: {e}")
         return None, "Error retrieving scoring result"
 
-
 @api_view(['POST'])
 @authentication_classes([BasicAuthentication])
 @permission_classes([AllowAny])
 def loan_request(request):
-    """
-    API endpoint to handle loan requests.
-    """
+    logger.info("Received loan request: %s", request.data)
     serializer = LoanRequestSerializer(data=request.data)
     if serializer.is_valid():
         customer_number = serializer.validated_data['customer_number']
         amount = serializer.validated_data['amount']
+        logger.info("Processing loan request for customer: %s, amount: %s", customer_number, amount)
 
         # Check for existing pending loan request
         if LoanRequest.objects.filter(customer_number=customer_number, status="Pending").exists():
+            logger.warning("Loan request already pending for customer: %s", customer_number)
             return Response({"error": "A loan request is already pending for this customer."},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        # 1. Fetch KYC data
+        # Fetch KYC data
         kyc_data = get_customer_kyc(customer_number)
         if not kyc_data:
+            logger.error("Failed to retrieve KYC data for customer: %s", customer_number)
             return Response({"error": "Failed to retrieve KYC data."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # 2. Store customer data (or update if exists)
+        # Store customer data
         customer, created = Customer.objects.update_or_create(
             customer_number=customer_number,
             defaults={
-                'first_name': kyc_data.firstName,  # Adapt these field mappings
+                'first_name': kyc_data.firstName,
                 'last_name': kyc_data.lastName,
                 'date_of_birth': kyc_data.dateOfBirth,
                 # ... other KYC fields
             }
         )
 
-        # 3. Initiate scoring query
+        # Initiate scoring query
         scoring_response, scoring_error = initiate_scoring_query(customer_number, amount)
         if scoring_error:
+            logger.error("Scoring query failed for customer: %s, error: %s", customer_number, scoring_error)
             return Response({"error": scoring_error}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         token = scoring_response.get("token")
 
-        # 4. Create LoanRequest object
+        # Create LoanRequest object
         loan_request = serializer.save(customer_number=customer_number, token=token)
 
-        # 5. Get scoring result
+        # Get scoring result
         scoring_result, result_error = get_scoring_result(token)
         if result_error:
-            loan_request.status = "Failed"  # Or another appropriate status
+            loan_request.status = "Failed"
             loan_request.save()
+            logger.error("Failed to get scoring result for token: %s, error: %s", token, result_error)
             return Response({"error": result_error}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # 6. Process scoring result and update LoanRequest
+        # Process scoring result
         score = scoring_result.get("score")
         limit_amount = scoring_result.get("limitAmount")
 
-        if score >= 600:  # Example threshold - adjust as needed
+        if score >= 600:  # Example threshold
             loan_request.status = "Approved"
             loan_request.approved_limit = limit_amount
         else:
             loan_request.status = "Rejected"
 
-        loan_request.score = score  # Store the score
+        loan_request.score = score
         loan_request.save()
 
         # Create ScoringResult object
@@ -297,11 +305,12 @@ def loan_request(request):
             "customer_number": customer_number,
             "amount": amount,
             "status": loan_request.status,
-            "approved_limit": loan_request.approved_limit  # Include approved limit
+            "approved_limit": loan_request.approved_limit
         }
+        logger.info("Loan request processed successfully: %s", loan_response_data)
         return Response(loan_response_data, status=status.HTTP_200_OK)
+    logger.error("Invalid loan request data: %s", serializer.errors)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 @api_view(['GET'])
 @authentication_classes([BasicAuthentication])
