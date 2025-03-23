@@ -44,15 +44,26 @@ def register_client():
         "username": settings.CORE_BANKING_USERNAME,
         "password": settings.CORE_BANKING_PASSWORD
     }
+    
     try:
+        # Log the request for debugging
+        logger.info(f"Register client request: URL={url}, Payload={payload}")
+        
         response = requests.post(url, json=payload)
+        
+        # Log the response for debugging
+        logger.info(f"Register client response: Status={response.status_code}, Content={response.text}")
+        
         response.raise_for_status()
-        CLIENT_TOKEN = response.json().get("token")
+        response_data = response.json()
+        CLIENT_TOKEN = response_data.get("token")
+        logger.info(f"Client token received: {CLIENT_TOKEN}")
         return CLIENT_TOKEN
     except requests.exceptions.RequestException as e:
         logger.error(f"Error registering client: {e}")
         logger.error(f"Response content: {response.content if 'response' in locals() else 'No response'}")
         return None
+
 
 
 # Function to fetch customer KYC data
@@ -194,21 +205,35 @@ def initiate_scoring_query(customer_number, amount):
         if not CLIENT_TOKEN:
             return None, "Error registering client with Scoring Engine"
 
+    # This URL format should match the documentation
     url = f"{SCORING_ENGINE_BASE_URL}/initiateQueryScore"
+    
+    # The payload should include customerNumber, amount, and clientToken
     payload = {
         "customerNumber": customer_number,
-        "amount": amount,
+        "amount": float(amount),  # Ensure amount is sent as a number
         "clientToken": CLIENT_TOKEN
     }
-    headers = {'Content-Type': 'application/json'}
+    
+    headers = {
+        'Content-Type': 'application/json',
+        'client-token': CLIENT_TOKEN  # Add this header as per documentation
+    }
 
     for attempt in range(RETRY_COUNT + 1):
         try:
             response = requests.post(url, json=payload, headers=headers)
+            
+            # Log the request and response for debugging
+            logger.info(f"Scoring Engine request: URL={url}, Payload={payload}, Headers={headers}")
+            logger.info(f"Scoring Engine response: Status={response.status_code}, Content={response.text}")
+            
             response.raise_for_status()  # Raise an exception for bad status codes
             return response.json(), None
         except requests.exceptions.RequestException as e:
-            print(f"Attempt {attempt + 1} failed: {e}")
+            logger.error(f"Attempt {attempt + 1} failed: {e}")
+            logger.error(f"Response content: {response.content if 'response' in locals() else 'No response'}")
+            
             if attempt == RETRY_COUNT:
                 return None, f"Scoring Engine request failed after {RETRY_COUNT} retries"
             time.sleep(RETRY_DELAY)  # Wait before retrying
@@ -220,12 +245,22 @@ def get_scoring_result(token):
     Retrieves the scoring result from the Scoring Engine using the provided token.
     """
     url = f"{SCORING_ENGINE_BASE_URL}/queryScore/{token}"
+    
+    # Add the client token in the header as specified in the documentation
+    headers = {'client-token': CLIENT_TOKEN}
+    
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=headers)
+        
+        # Log the request and response for debugging
+        logger.info(f"Get scoring result request: URL={url}, Headers={headers}")
+        logger.info(f"Get scoring result response: Status={response.status_code}, Content={response.text}")
+        
         response.raise_for_status()
         return response.json(), None
     except requests.exceptions.RequestException as e:
-        print(f"Error getting scoring result: {e}")
+        logger.error(f"Error getting scoring result: {e}")
+        logger.error(f"Response content: {response.content if 'response' in locals() else 'No response'}")
         return None, "Error retrieving scoring result"
 
 @api_view(['POST'])
@@ -233,18 +268,23 @@ def get_scoring_result(token):
 @permission_classes([AllowAny])
 def loan_request(request):
     logger.info("Received loan request: %s", request.data)
+    
     serializer = LoanRequestSerializer(data=request.data)
-    if serializer.is_valid():
-        customer_number = serializer.validated_data['customer_number']
-        amount = serializer.validated_data['amount']
-        logger.info("Processing loan request for customer: %s, amount: %s", customer_number, amount)
+    if not serializer.is_valid():
+        logger.error("Invalid loan request data: %s", serializer.errors)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    customer_number = serializer.validated_data['customer_number']
+    amount = serializer.validated_data['amount']
+    logger.info("Processing loan request for customer: %s, amount: %s", customer_number, amount)
 
-        # Check for existing pending loan request
-        if LoanRequest.objects.filter(customer_number=customer_number, status="Pending").exists():
-            logger.warning("Loan request already pending for customer: %s", customer_number)
-            return Response({"error": "A loan request is already pending for this customer."},
-                            status=status.HTTP_400_BAD_REQUEST)
+    # Check for existing pending loan request
+    if LoanRequest.objects.filter(customer_number=customer_number, status="Pending").exists():
+        logger.warning("Loan request already pending for customer: %s", customer_number)
+        return Response({"error": "A loan request is already pending for this customer."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
+    try:
         # Fetch KYC data
         kyc_data = get_customer_kyc(customer_number)
         if not kyc_data:
@@ -262,16 +302,30 @@ def loan_request(request):
             }
         )
 
+        # Create LoanRequest object first with pending status
+        loan_request = serializer.save(
+            customer_number=customer_number,
+            status="Pending"
+        )
+
         # Initiate scoring query
         scoring_response, scoring_error = initiate_scoring_query(customer_number, amount)
         if scoring_error:
+            loan_request.status = "Failed"
+            loan_request.save()
             logger.error("Scoring query failed for customer: %s, error: %s", customer_number, scoring_error)
             return Response({"error": scoring_error}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         token = scoring_response.get("token")
+        if not token:
+            loan_request.status = "Failed"
+            loan_request.save()
+            logger.error("No token received from scoring engine for customer: %s", customer_number)
+            return Response({"error": "No token received from scoring engine"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # Create LoanRequest object
-        loan_request = serializer.save(customer_number=customer_number, token=token)
+        # Update the loan request with the token
+        loan_request.token = token
+        loan_request.save()
 
         # Get scoring result
         scoring_result, result_error = get_scoring_result(token)
@@ -309,8 +363,17 @@ def loan_request(request):
         }
         logger.info("Loan request processed successfully: %s", loan_response_data)
         return Response(loan_response_data, status=status.HTTP_200_OK)
-    logger.error("Invalid loan request data: %s", serializer.errors)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    except Exception as e:
+        # Catch any unexpected exceptions
+        logger.exception("Unexpected error processing loan request for customer %s: %s", customer_number, str(e))
+        
+        # Update loan request status if it was created
+        if 'loan_request' in locals():
+            loan_request.status = "Failed"
+            loan_request.save()
+            
+        return Response({"error": f"Unexpected error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['GET'])
 @authentication_classes([BasicAuthentication])
